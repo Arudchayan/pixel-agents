@@ -107,6 +107,36 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				const runtime = message.runtime === AgentRuntime.OPENCODE ? AgentRuntime.OPENCODE : AgentRuntime.CLAUDE;
 				this.context.globalState.update(GLOBAL_KEY_AGENT_RUNTIME, runtime);
 			} else if (message.type === 'webviewReady') {
+				const runSessionDiscovery = (): void => {
+					const openCode = discoverAndAdoptOpenCodeSessions(
+						this.nextAgentId,
+						this.agents,
+						this.waitingTimers,
+						this.permissionTimers,
+						this.jsonlPollTimers,
+						this.webview,
+						this.persistAgents,
+					);
+					const claude = discoverAndAdoptClaudeSessions(
+						this.nextAgentId,
+						this.agents,
+						this.fileWatchers,
+						this.pollingTimers,
+						this.waitingTimers,
+						this.permissionTimers,
+						this.webview,
+						this.persistAgents,
+					);
+					this.webview?.postMessage({
+						type: 'sessionDiscoveryStats',
+						openCodeFound: openCode.found,
+						openCodeAdopted: openCode.adopted,
+						claudeFound: claude.found,
+						claudeAdopted: claude.adopted,
+						timestamp: Date.now(),
+					});
+				};
+
 				restoreAgents(
 					this.context,
 					this.nextAgentId, this.nextTerminalIndex,
@@ -115,46 +145,10 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					this.jsonlPollTimers, this.projectScanTimer, this.activeAgentId,
 					this.webview, this.persistAgents,
 				);
-				discoverAndAdoptOpenCodeSessions(
-					this.nextAgentId,
-					this.agents,
-					this.waitingTimers,
-					this.permissionTimers,
-					this.jsonlPollTimers,
-					this.webview,
-					this.persistAgents,
-				);
-				discoverAndAdoptClaudeSessions(
-					this.nextAgentId,
-					this.agents,
-					this.fileWatchers,
-					this.pollingTimers,
-					this.waitingTimers,
-					this.permissionTimers,
-					this.webview,
-					this.persistAgents,
-				);
+				runSessionDiscovery();
 				if (!this.opencodeDiscoveryTimer) {
 					this.opencodeDiscoveryTimer = setInterval(() => {
-						discoverAndAdoptOpenCodeSessions(
-							this.nextAgentId,
-							this.agents,
-							this.waitingTimers,
-							this.permissionTimers,
-							this.jsonlPollTimers,
-							this.webview,
-							this.persistAgents,
-						);
-						discoverAndAdoptClaudeSessions(
-							this.nextAgentId,
-							this.agents,
-							this.fileWatchers,
-							this.pollingTimers,
-							this.waitingTimers,
-							this.permissionTimers,
-							this.webview,
-							this.persistAgents,
-						);
+						runSessionDiscovery();
 					}, OPENCODE_DISCOVERY_INTERVAL_MS);
 				}
 				// Send persisted settings to webview

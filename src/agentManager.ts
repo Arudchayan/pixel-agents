@@ -283,12 +283,13 @@ export function discoverAndAdoptOpenCodeSessions(
 	jsonlPollTimers: Map<number, ReturnType<typeof setInterval>>,
 	webview: vscode.Webview | undefined,
 	persistAgents: () => void,
-): void {
-	const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+): { found: number; adopted: number } {
+	const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 	const sessions = listOpenCodeSessions(undefined);
 	if (sessions.length === 0) {
-		return;
+		return { found: 0, adopted: 0 };
 	}
+	let adopted = 0;
 
 	const knownSessionIds = new Set<string>();
 	for (const agent of agents.values()) {
@@ -308,7 +309,7 @@ export function discoverAndAdoptOpenCodeSessions(
 		}
 
 		const id = nextAgentIdRef.current++;
-		const projectDir = session.directory || cwd || getOpenCodeDataDir();
+		const projectDir = session.directory || workspaceRoot || getOpenCodeDataDir();
 		const folderName = formatAgentLabel(
 			AgentRuntime.OPENCODE,
 			true,
@@ -359,7 +360,9 @@ export function discoverAndAdoptOpenCodeSessions(
 			pollOpenCodeSession(id, agents, waitingTimers, permissionTimers, webview);
 		}, JSONL_POLL_INTERVAL_MS);
 		jsonlPollTimers.set(id, pollTimer);
+		adopted++;
 	}
+	return { found: sessions.length, adopted };
 }
 
 export function discoverAndAdoptClaudeSessions(
@@ -371,11 +374,12 @@ export function discoverAndAdoptClaudeSessions(
 	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 	webview: vscode.Webview | undefined,
 	persistAgents: () => void,
-): void {
+): { found: number; adopted: number } {
 	const sessions = listRecentClaudeSessions();
 	if (sessions.length === 0) {
-		return;
+		return { found: 0, adopted: 0 };
 	}
+	let adopted = 0;
 
 	const knownFiles = new Set<string>();
 	for (const agent of agents.values()) {
@@ -430,7 +434,9 @@ export function discoverAndAdoptClaudeSessions(
 		webview?.postMessage({ type: 'agentCreated', id, runtime: AgentRuntime.CLAUDE, externalSession: true, folderName });
 		startFileWatching(id, session.filePath, agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers, webview);
 		readNewLines(id, agents, waitingTimers, permissionTimers, webview);
+		adopted++;
 	}
+	return { found: sessions.length, adopted };
 }
 
 export async function launchNewTerminal(

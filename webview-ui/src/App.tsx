@@ -135,6 +135,7 @@ function App() {
     loadedAssets,
     workspaceFolders,
     agentRuntime: loadedAgentRuntime,
+    sessionDiscoveryStats,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty)
 
   const [isDebugMode, setIsDebugMode] = useState(false)
@@ -252,6 +253,27 @@ function App() {
         }}
       >
         {`Sessions - Claude: ${claudeCount} | OpenCode: ${openCodeCount}${externalCount > 0 ? ` | External: ${externalCount}` : ''}`}
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          top: 34,
+          left: 8,
+          zIndex: 'var(--pixel-controls-z)',
+          background: 'var(--pixel-bg)',
+          border: '2px solid var(--pixel-border)',
+          borderRadius: 0,
+          boxShadow: 'var(--pixel-shadow)',
+          color: '#ffffff',
+          fontSize: '14px',
+          padding: '2px 8px',
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+        }}
+      >
+        {sessionDiscoveryStats
+          ? `Discovery - OpenCode: ${sessionDiscoveryStats.openCodeFound}/${sessionDiscoveryStats.openCodeAdopted} | Claude: ${sessionDiscoveryStats.claudeFound}/${sessionDiscoveryStats.claudeAdopted}`
+          : 'Discovery - waiting for first scan'}
       </div>
 
       {/* Vignette overlay */}

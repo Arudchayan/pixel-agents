@@ -60,6 +60,13 @@ export interface ExtensionMessageState {
   loadedAssets?: { catalog: FurnitureAsset[]; sprites: Record<string, string[][]> }
   workspaceFolders: WorkspaceFolder[]
   agentRuntime: AgentRuntime
+  sessionDiscoveryStats: {
+    openCodeFound: number
+    openCodeAdopted: number
+    claudeFound: number
+    claudeAdopted: number
+    timestamp: number
+  } | null
 }
 
 function saveAgentSeats(os: OfficeState): void {
@@ -88,6 +95,13 @@ export function useExtensionMessages(
   const [loadedAssets, setLoadedAssets] = useState<{ catalog: FurnitureAsset[]; sprites: Record<string, string[][]> } | undefined>()
   const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceFolder[]>([])
   const [agentRuntime, setAgentRuntime] = useState<AgentRuntime>(AgentRuntime.CLAUDE)
+  const [sessionDiscoveryStats, setSessionDiscoveryStats] = useState<{
+    openCodeFound: number
+    openCodeAdopted: number
+    claudeFound: number
+    claudeAdopted: number
+    timestamp: number
+  } | null>(null)
 
   useEffect(() => {
     if (!isVsCodeHost) {
@@ -400,6 +414,14 @@ export function useExtensionMessages(
       } else if (msg.type === 'workspaceFolders') {
         const folders = msg.folders as WorkspaceFolder[]
         setWorkspaceFolders(folders)
+      } else if (msg.type === 'sessionDiscoveryStats') {
+        setSessionDiscoveryStats({
+          openCodeFound: Number(msg.openCodeFound || 0),
+          openCodeAdopted: Number(msg.openCodeAdopted || 0),
+          claudeFound: Number(msg.claudeFound || 0),
+          claudeAdopted: Number(msg.claudeAdopted || 0),
+          timestamp: Number(msg.timestamp || 0),
+        })
       } else if (msg.type === 'settingsLoaded') {
         const soundOn = msg.soundEnabled as boolean
         setSoundEnabled(soundOn)
@@ -423,5 +445,5 @@ export function useExtensionMessages(
     return () => window.removeEventListener('message', handler)
   }, [getOfficeState])
 
-  return { agents, selectedAgent, agentTools, agentStatuses, agentRuntimeById, externalSessionById, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders, agentRuntime }
+  return { agents, selectedAgent, agentTools, agentStatuses, agentRuntimeById, externalSessionById, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders, agentRuntime, sessionDiscoveryStats }
 }
