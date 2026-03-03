@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { AgentRuntime } from './types.js';
 import type { AgentState } from './types.js';
 import { cancelWaitingTimer, cancelPermissionTimer, clearAgentActivity } from './timerManager.js';
 import { processTranscriptLine } from './transcriptParser.js';
@@ -198,8 +199,11 @@ function adoptTerminalForFile(
 	const agent: AgentState = {
 		id,
 		terminalRef: terminal,
+		runtime: AgentRuntime.CLAUDE,
 		projectDir,
 		jsonlFile,
+		opencodeSessionId: undefined,
+		opencodeSeenMessageIds: new Set(),
 		fileOffset: 0,
 		lineBuffer: '',
 		activeToolIds: new Set(),
@@ -210,6 +214,7 @@ function adoptTerminalForFile(
 		isWaiting: false,
 		permissionSent: false,
 		hadToolsInTurn: false,
+		folderName: 'Claude',
 	};
 
 	agents.set(id, agent);
@@ -217,7 +222,7 @@ function adoptTerminalForFile(
 	persistAgents();
 
 	console.log(`[Pixel Agents] Agent ${id}: adopted terminal "${terminal.name}" for ${path.basename(jsonlFile)}`);
-	webview?.postMessage({ type: 'agentCreated', id });
+	webview?.postMessage({ type: 'agentCreated', id, runtime: AgentRuntime.CLAUDE, externalSession: false, folderName: 'Claude' });
 
 	startFileWatching(id, jsonlFile, agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers, webview);
 	readNewLines(id, agents, waitingTimers, permissionTimers, webview);

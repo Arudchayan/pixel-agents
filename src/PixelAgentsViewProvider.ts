@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { AgentState } from './types.js';
+import { AgentRuntime } from './types.js';
+import type { AgentState, AgentRuntime as AgentRuntimeType } from './types.js';
 import {
 	launchNewTerminal,
 	removeAgent,
@@ -11,10 +12,12 @@ import {
 	sendExistingAgents,
 	sendLayout,
 	getProjectDirPath,
+	discoverAndAdoptOpenCodeSessions,
+	discoverAndAdoptClaudeSessions,
 } from './agentManager.js';
 import { ensureProjectScan } from './fileWatcher.js';
 import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTilesToWebview, loadWallTiles, sendWallTilesToWebview, loadCharacterSprites, sendCharacterSpritesToWebview, loadDefaultLayout } from './assetLoader.js';
-import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED } from './constants.js';
+import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED, GLOBAL_KEY_AGENT_RUNTIME, OPENCODE_DISCOVERY_INTERVAL_MS } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 
@@ -35,6 +38,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	activeAgentId = { current: null as number | null };
 	knownJsonlFiles = new Set<string>();
 	projectScanTimer = { current: null as ReturnType<typeof setInterval> | null };
+	opencodeDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Bundled default layout (loaded from assets/default-layout.json)
 	defaultLayout: Record<string, unknown> | null = null;
@@ -62,24 +66,33 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
 		webviewView.webview.onDidReceiveMessage(async (message) => {
-			if (message.type === 'openClaude') {
+			if (message.type === 'openClaude' || message.type === 'openAgent') {
+				const runtime = this.context.globalState.get<AgentRuntimeType>(GLOBAL_KEY_AGENT_RUNTIME, AgentRuntime.CLAUDE);
 				await launchNewTerminal(
 					this.nextAgentId, this.nextTerminalIndex,
 					this.agents, this.activeAgentId, this.knownJsonlFiles,
 					this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
 					this.jsonlPollTimers, this.projectScanTimer,
 					this.webview, this.persistAgents,
+					runtime,
 					message.folderPath as string | undefined,
 				);
 			} else if (message.type === 'focusAgent') {
 				const agent = this.agents.get(message.id);
-				if (agent) {
+				if (agent?.terminalRef) {
 					agent.terminalRef.show();
 				}
 			} else if (message.type === 'closeAgent') {
 				const agent = this.agents.get(message.id);
-				if (agent) {
+				if (agent?.terminalRef) {
 					agent.terminalRef.dispose();
+				} else if (agent) {
+					removeAgent(
+						message.id, this.agents,
+						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
+						this.jsonlPollTimers, this.persistAgents,
+					);
+					webviewView.webview.postMessage({ type: 'agentClosed', id: message.id });
 				}
 			} else if (message.type === 'saveAgentSeats') {
 				// Store seat assignments in a separate key (never touched by persistAgents)
@@ -90,6 +103,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				writeLayoutToFile(message.layout as Record<string, unknown>);
 			} else if (message.type === 'setSoundEnabled') {
 				this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
+			} else if (message.type === 'setAgentRuntime') {
+				const runtime = message.runtime === AgentRuntime.OPENCODE ? AgentRuntime.OPENCODE : AgentRuntime.CLAUDE;
+				this.context.globalState.update(GLOBAL_KEY_AGENT_RUNTIME, runtime);
 			} else if (message.type === 'webviewReady') {
 				restoreAgents(
 					this.context,
@@ -99,9 +115,52 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					this.jsonlPollTimers, this.projectScanTimer, this.activeAgentId,
 					this.webview, this.persistAgents,
 				);
+				discoverAndAdoptOpenCodeSessions(
+					this.nextAgentId,
+					this.agents,
+					this.waitingTimers,
+					this.permissionTimers,
+					this.jsonlPollTimers,
+					this.webview,
+					this.persistAgents,
+				);
+				discoverAndAdoptClaudeSessions(
+					this.nextAgentId,
+					this.agents,
+					this.fileWatchers,
+					this.pollingTimers,
+					this.waitingTimers,
+					this.permissionTimers,
+					this.webview,
+					this.persistAgents,
+				);
+				if (!this.opencodeDiscoveryTimer) {
+					this.opencodeDiscoveryTimer = setInterval(() => {
+						discoverAndAdoptOpenCodeSessions(
+							this.nextAgentId,
+							this.agents,
+							this.waitingTimers,
+							this.permissionTimers,
+							this.jsonlPollTimers,
+							this.webview,
+							this.persistAgents,
+						);
+						discoverAndAdoptClaudeSessions(
+							this.nextAgentId,
+							this.agents,
+							this.fileWatchers,
+							this.pollingTimers,
+							this.waitingTimers,
+							this.permissionTimers,
+							this.webview,
+							this.persistAgents,
+						);
+					}, OPENCODE_DISCOVERY_INTERVAL_MS);
+				}
 				// Send persisted settings to webview
 				const soundEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_SOUND_ENABLED, true);
-				this.webview?.postMessage({ type: 'settingsLoaded', soundEnabled });
+				const agentRuntime = this.context.globalState.get<AgentRuntimeType>(GLOBAL_KEY_AGENT_RUNTIME, AgentRuntime.CLAUDE);
+				this.webview?.postMessage({ type: 'settingsLoaded', soundEnabled, agentRuntime });
 
 				// Send workspace folders to webview (only when multi-root)
 				const wsFolders = vscode.workspace.workspaceFolders;
@@ -270,7 +329,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			this.activeAgentId.current = null;
 			if (!terminal) return;
 			for (const [id, agent] of this.agents) {
-				if (agent.terminalRef === terminal) {
+				if (agent.terminalRef && agent.terminalRef === terminal) {
 					this.activeAgentId.current = id;
 					webviewView.webview.postMessage({ type: 'agentSelected', id });
 					break;
@@ -280,7 +339,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 		vscode.window.onDidCloseTerminal((closed) => {
 			for (const [id, agent] of this.agents) {
-				if (agent.terminalRef === closed) {
+				if (agent.terminalRef && agent.terminalRef === closed) {
 					if (this.activeAgentId.current === id) {
 						this.activeAgentId.current = null;
 					}
@@ -322,6 +381,10 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	dispose() {
+		if (this.opencodeDiscoveryTimer) {
+			clearInterval(this.opencodeDiscoveryTimer);
+			this.opencodeDiscoveryTimer = null;
+		}
 		this.layoutWatcher?.dispose();
 		this.layoutWatcher = null;
 		for (const id of [...this.agents.keys()]) {

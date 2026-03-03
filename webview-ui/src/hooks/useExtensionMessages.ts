@@ -7,7 +7,7 @@ import { buildDynamicCatalog } from '../office/layout/furnitureCatalog.js'
 import { setFloorSprites } from '../office/floorTiles.js'
 import { setWallSprites } from '../office/wallTiles.js'
 import { setCharacterTemplates } from '../office/sprites/spriteData.js'
-import { vscode } from '../vscodeApi.js'
+import { vscode, isVsCodeHost } from '../vscodeApi.js'
 import { playDoneSound, setSoundEnabled } from '../notificationSound.js'
 
 export interface SubagentCharacter {
@@ -40,16 +40,26 @@ export interface WorkspaceFolder {
   path: string
 }
 
+export const AgentRuntime = {
+  CLAUDE: 'claude',
+  OPENCODE: 'opencode',
+} as const
+
+export type AgentRuntime = typeof AgentRuntime[keyof typeof AgentRuntime]
+
 export interface ExtensionMessageState {
   agents: number[]
   selectedAgent: number | null
   agentTools: Record<number, ToolActivity[]>
   agentStatuses: Record<number, string>
+  agentRuntimeById: Record<number, AgentRuntime>
+  externalSessionById: Record<number, boolean>
   subagentTools: Record<number, Record<string, ToolActivity[]>>
   subagentCharacters: SubagentCharacter[]
   layoutReady: boolean
   loadedAssets?: { catalog: FurnitureAsset[]; sprites: Record<string, string[][]> }
   workspaceFolders: WorkspaceFolder[]
+  agentRuntime: AgentRuntime
 }
 
 function saveAgentSeats(os: OfficeState): void {
@@ -70,11 +80,20 @@ export function useExtensionMessages(
   const [selectedAgent, setSelectedAgent] = useState<number | null>(null)
   const [agentTools, setAgentTools] = useState<Record<number, ToolActivity[]>>({})
   const [agentStatuses, setAgentStatuses] = useState<Record<number, string>>({})
+  const [agentRuntimeById, setAgentRuntimeById] = useState<Record<number, AgentRuntime>>({})
+  const [externalSessionById, setExternalSessionById] = useState<Record<number, boolean>>({})
   const [subagentTools, setSubagentTools] = useState<Record<number, Record<string, ToolActivity[]>>>({})
   const [subagentCharacters, setSubagentCharacters] = useState<SubagentCharacter[]>([])
   const [layoutReady, setLayoutReady] = useState(false)
   const [loadedAssets, setLoadedAssets] = useState<{ catalog: FurnitureAsset[]; sprites: Record<string, string[][]> } | undefined>()
   const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceFolder[]>([])
+  const [agentRuntime, setAgentRuntime] = useState<AgentRuntime>(AgentRuntime.CLAUDE)
+
+  useEffect(() => {
+    if (!isVsCodeHost) {
+      setLayoutReady(true)
+    }
+  }, [])
 
   // Track whether initial layout has been loaded (ref to avoid re-render)
   const layoutReadyRef = useRef(false)
@@ -114,8 +133,12 @@ export function useExtensionMessages(
         }
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number
+        const runtime = msg.runtime === AgentRuntime.OPENCODE ? AgentRuntime.OPENCODE : AgentRuntime.CLAUDE
+        const externalSession = !!msg.externalSession
         const folderName = msg.folderName as string | undefined
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]))
+        setAgentRuntimeById((prev) => ({ ...prev, [id]: runtime }))
+        setExternalSessionById((prev) => ({ ...prev, [id]: externalSession }))
         setSelectedAgent(id)
         os.addAgent(id, undefined, undefined, undefined, undefined, folderName)
         saveAgentSeats(os)
@@ -141,6 +164,18 @@ export function useExtensionMessages(
           delete next[id]
           return next
         })
+        setAgentRuntimeById((prev) => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
+        setExternalSessionById((prev) => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
         // Remove all sub-agent characters belonging to this agent
         os.removeAllSubagents(id)
         setSubagentCharacters((prev) => prev.filter((s) => s.parentAgentId !== id))
@@ -148,6 +183,8 @@ export function useExtensionMessages(
       } else if (msg.type === 'existingAgents') {
         const incoming = msg.agents as number[]
         const meta = (msg.agentMeta || {}) as Record<number, { palette?: number; hueShift?: number; seatId?: string }>
+        const runtimeMeta = (msg.agentRuntimes || {}) as Record<number, AgentRuntime>
+        const externalMeta = (msg.externalSessions || {}) as Record<number, boolean>
         const folderNames = (msg.folderNames || {}) as Record<number, string>
         // Buffer agents — they'll be added in layoutLoaded after seats are built
         for (const id of incoming) {
@@ -164,6 +201,20 @@ export function useExtensionMessages(
           }
           return merged.sort((a, b) => a - b)
         })
+        setAgentRuntimeById((prev) => {
+          const next = { ...prev }
+          for (const id of incoming) {
+            next[id] = runtimeMeta[id] === AgentRuntime.OPENCODE ? AgentRuntime.OPENCODE : AgentRuntime.CLAUDE
+          }
+          return next
+        })
+        setExternalSessionById((prev) => {
+          const next = { ...prev }
+          for (const id of incoming) {
+            next[id] = !!externalMeta[id]
+          }
+          return next
+        })
       } else if (msg.type === 'agentToolStart') {
         const id = msg.id as number
         const toolId = msg.toolId as string
@@ -178,8 +229,10 @@ export function useExtensionMessages(
         os.setAgentActive(id, true)
         os.clearPermissionBubble(id)
         // Create sub-agent character for Task tool subtasks
-        if (status.startsWith('Subtask:')) {
-          const label = status.slice('Subtask:'.length).trim()
+        if (status.startsWith('Subtask:') || status === 'Running subtask') {
+          const label = status.startsWith('Subtask:')
+            ? status.slice('Subtask:'.length).trim()
+            : 'Subtask'
           const subId = os.addSubagent(id, toolId)
           setSubagentCharacters((prev) => {
             if (prev.some((s) => s.id === subId)) return prev
@@ -285,13 +338,21 @@ export function useExtensionMessages(
           if (list.some((t) => t.toolId === toolId)) return prev
           return { ...prev, [id]: { ...agentSubs, [parentToolId]: [...list, { toolId, status, done: false }] } }
         })
-        // Update sub-agent character's tool and active state
-        const subId = os.getSubagentId(id, parentToolId)
-        if (subId !== null) {
-          const subToolName = extractToolName(status)
-          os.setAgentTool(subId, subToolName)
-          os.setAgentActive(subId, true)
+        const existingSubId = os.getSubagentId(id, parentToolId)
+        const subId = existingSubId ?? os.addSubagent(id, parentToolId)
+        if (existingSubId === null) {
+          const label = status.startsWith('Subtask:')
+            ? status.slice('Subtask:'.length).trim()
+            : (status || 'Subtask')
+          setSubagentCharacters((prev) => {
+            if (prev.some((s) => s.id === subId)) return prev
+            return [...prev, { id: subId, parentAgentId: id, parentToolId, label }]
+          })
         }
+
+        const subToolName = extractToolName(status)
+        os.setAgentTool(subId, subToolName)
+        os.setAgentActive(subId, true)
       } else if (msg.type === 'subagentToolDone') {
         const id = msg.id as number
         const parentToolId = msg.parentToolId as string
@@ -342,6 +403,8 @@ export function useExtensionMessages(
       } else if (msg.type === 'settingsLoaded') {
         const soundOn = msg.soundEnabled as boolean
         setSoundEnabled(soundOn)
+        const runtime = msg.agentRuntime === AgentRuntime.OPENCODE ? AgentRuntime.OPENCODE : AgentRuntime.CLAUDE
+        setAgentRuntime(runtime)
       } else if (msg.type === 'furnitureAssetsLoaded') {
         try {
           const catalog = msg.catalog as FurnitureAsset[]
@@ -360,5 +423,5 @@ export function useExtensionMessages(
     return () => window.removeEventListener('message', handler)
   }, [getOfficeState])
 
-  return { agents, selectedAgent, agentTools, agentStatuses, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders }
+  return { agents, selectedAgent, agentTools, agentStatuses, agentRuntimeById, externalSessionById, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders, agentRuntime }
 }

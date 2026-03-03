@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import { vscode } from '../vscodeApi.js'
 import { isSoundEnabled, setSoundEnabled } from '../notificationSound.js'
+import { AgentRuntime } from '../hooks/useExtensionMessages.js'
+import type { AgentRuntime as AgentRuntimeType } from '../hooks/useExtensionMessages.js'
 
 interface SettingsModalProps {
   isOpen: boolean
   onClose: () => void
   isDebugMode: boolean
   onToggleDebugMode: () => void
+  agentRuntime: AgentRuntimeType
+  onAgentRuntimeChange: (runtime: AgentRuntimeType) => void
 }
 
 const menuItemBase: React.CSSProperties = {
@@ -24,7 +28,7 @@ const menuItemBase: React.CSSProperties = {
   textAlign: 'left',
 }
 
-export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode }: SettingsModalProps) {
+export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode, agentRuntime, onAgentRuntimeChange }: SettingsModalProps) {
   const [hovered, setHovered] = useState<string | null>(null)
   const [soundLocal, setSoundLocal] = useState(isSoundEnabled)
 
@@ -133,6 +137,22 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           }}
         >
           Import Layout
+        </button>
+        <button
+          onClick={() => {
+            const next = agentRuntime === AgentRuntime.CLAUDE ? AgentRuntime.OPENCODE : AgentRuntime.CLAUDE
+            onAgentRuntimeChange(next)
+            vscode.postMessage({ type: 'setAgentRuntime', runtime: next })
+          }}
+          onMouseEnter={() => setHovered('runtime')}
+          onMouseLeave={() => setHovered(null)}
+          style={{
+            ...menuItemBase,
+            background: hovered === 'runtime' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+          }}
+        >
+          <span>Agent Runtime</span>
+          <span>{agentRuntime === AgentRuntime.OPENCODE ? 'OpenCode' : 'Claude'}</span>
         </button>
         <button
           onClick={() => {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { SettingsModal } from './SettingsModal.js'
-import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js'
+import type { WorkspaceFolder, AgentRuntime } from '../hooks/useExtensionMessages.js'
 import { vscode } from '../vscodeApi.js'
 
 interface BottomToolbarProps {
@@ -10,6 +10,8 @@ interface BottomToolbarProps {
   isDebugMode: boolean
   onToggleDebugMode: () => void
   workspaceFolders: WorkspaceFolder[]
+  agentRuntime: AgentRuntime
+  onAgentRuntimeChange: (runtime: AgentRuntime) => void
 }
 
 const panelStyle: React.CSSProperties = {
@@ -51,6 +53,8 @@ export function BottomToolbar({
   isDebugMode,
   onToggleDebugMode,
   workspaceFolders,
+  agentRuntime,
+  onAgentRuntimeChange,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -82,7 +86,7 @@ export function BottomToolbar({
 
   const handleFolderSelect = (folder: WorkspaceFolder) => {
     setIsFolderPickerOpen(false)
-    vscode.postMessage({ type: 'openClaude', folderPath: folder.path })
+    vscode.postMessage({ type: 'openAgent', folderPath: folder.path })
   }
 
   return (
@@ -184,6 +188,8 @@ export function BottomToolbar({
           onClose={() => setIsSettingsOpen(false)}
           isDebugMode={isDebugMode}
           onToggleDebugMode={onToggleDebugMode}
+          agentRuntime={agentRuntime}
+          onAgentRuntimeChange={onAgentRuntimeChange}
         />
       </div>
     </div>

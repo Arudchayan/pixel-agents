@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { OfficeState } from './office/engine/officeState.js'
 import { OfficeCanvas } from './office/components/OfficeCanvas.js'
 import { ToolOverlay } from './office/components/ToolOverlay.js'
@@ -7,7 +7,8 @@ import { EditorState } from './office/editor/editorState.js'
 import { EditTool } from './office/types.js'
 import { isRotatable } from './office/layout/furnitureCatalog.js'
 import { vscode } from './vscodeApi.js'
-import { useExtensionMessages } from './hooks/useExtensionMessages.js'
+import { useExtensionMessages, AgentRuntime } from './hooks/useExtensionMessages.js'
+import type { AgentRuntime as AgentRuntimeType } from './hooks/useExtensionMessages.js'
 import { PULSE_ANIMATION_DURATION_SEC } from './constants.js'
 import { useEditorActions } from './hooks/useEditorActions.js'
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js'
@@ -121,9 +122,27 @@ function App() {
 
   const isEditDirty = useCallback(() => editor.isEditMode && editor.isDirty, [editor.isEditMode, editor.isDirty])
 
-  const { agents, selectedAgent, agentTools, agentStatuses, subagentTools, subagentCharacters, layoutReady, loadedAssets, workspaceFolders } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty)
+  const {
+    agents,
+    selectedAgent,
+    agentTools,
+    agentStatuses,
+    agentRuntimeById,
+    externalSessionById,
+    subagentTools,
+    subagentCharacters,
+    layoutReady,
+    loadedAssets,
+    workspaceFolders,
+    agentRuntime: loadedAgentRuntime,
+  } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty)
 
   const [isDebugMode, setIsDebugMode] = useState(false)
+  const [agentRuntime, setAgentRuntime] = useState<AgentRuntimeType>(AgentRuntime.CLAUDE)
+
+  useEffect(() => {
+    setAgentRuntime(loadedAgentRuntime)
+  }, [loadedAgentRuntime])
 
   const handleToggleDebugMode = useCallback(() => setIsDebugMode((prev) => !prev), [])
 
@@ -159,6 +178,9 @@ function App() {
   }, [])
 
   const officeState = getOfficeState()
+  const openCodeCount = agents.filter((id) => agentRuntimeById[id] === AgentRuntime.OPENCODE).length
+  const claudeCount = agents.filter((id) => agentRuntimeById[id] !== AgentRuntime.OPENCODE).length
+  const externalCount = agents.filter((id) => externalSessionById[id]).length
 
   // Force dependency on editorTickForKeyboard to propagate keyboard-triggered re-renders
   void editorTickForKeyboard
@@ -212,6 +234,26 @@ function App() {
 
       <ZoomControls zoom={editor.zoom} onZoomChange={editor.handleZoomChange} />
 
+      <div
+        style={{
+          position: 'absolute',
+          top: 8,
+          left: 8,
+          zIndex: 'var(--pixel-controls-z)',
+          background: 'var(--pixel-bg)',
+          border: '2px solid var(--pixel-border)',
+          borderRadius: 0,
+          boxShadow: 'var(--pixel-shadow)',
+          color: '#ffffff',
+          fontSize: '18px',
+          padding: '3px 8px',
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+        }}
+      >
+        {`Sessions - Claude: ${claudeCount} | OpenCode: ${openCodeCount}${externalCount > 0 ? ` | External: ${externalCount}` : ''}`}
+      </div>
+
       {/* Vignette overlay */}
       <div
         style={{
@@ -230,6 +272,8 @@ function App() {
         isDebugMode={isDebugMode}
         onToggleDebugMode={handleToggleDebugMode}
         workspaceFolders={workspaceFolders}
+        agentRuntime={agentRuntime}
+        onAgentRuntimeChange={setAgentRuntime}
       />
 
       {editor.isEditMode && editor.isDirty && (

@@ -17,6 +17,23 @@ import {
 
 export const PERMISSION_EXEMPT_TOOLS = new Set(['Task', 'AskUserQuestion']);
 
+function normalizeOpenCodeToolName(tool: string): string {
+	const key = tool.toLowerCase();
+	switch (key) {
+		case 'read': return 'Read';
+		case 'edit': return 'Edit';
+		case 'write': return 'Write';
+		case 'bash': return 'Bash';
+		case 'glob': return 'Glob';
+		case 'grep': return 'Grep';
+		case 'webfetch': return 'WebFetch';
+		case 'websearch': return 'WebSearch';
+		case 'task': return 'Task';
+		case 'question': return 'AskUserQuestion';
+		default: return tool;
+	}
+}
+
 export function formatToolStatus(toolName: string, input: Record<string, unknown>): string {
 	const base = (p: unknown) => typeof p === 'string' ? path.basename(p) : '';
 	switch (toolName) {
@@ -33,7 +50,7 @@ export function formatToolStatus(toolName: string, input: Record<string, unknown
 		case 'WebSearch': return 'Searching the web';
 		case 'Task': {
 			const desc = typeof input.description === 'string' ? input.description : '';
-			return desc ? `Subtask: ${desc.length > TASK_DESCRIPTION_DISPLAY_MAX_LENGTH ? desc.slice(0, TASK_DESCRIPTION_DISPLAY_MAX_LENGTH) + '\u2026' : desc}` : 'Running subtask';
+			return desc ? `Subtask: ${desc.length > TASK_DESCRIPTION_DISPLAY_MAX_LENGTH ? desc.slice(0, TASK_DESCRIPTION_DISPLAY_MAX_LENGTH) + '\u2026' : desc}` : 'Subtask: Running subtask';
 		}
 		case 'AskUserQuestion': return 'Waiting for your answer';
 		case 'EnterPlanMode': return 'Planning';
@@ -173,6 +190,120 @@ export function processTranscriptLine(
 		}
 	} catch {
 		// Ignore malformed lines
+	}
+}
+
+export function processOpenCodeExport(
+	agentId: number,
+	exported: Record<string, unknown>,
+	agents: Map<number, AgentState>,
+	waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
+	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
+	webview: vscode.Webview | undefined,
+): void {
+	const agent = agents.get(agentId);
+	if (!agent) return;
+	const messages = exported.messages;
+	if (!Array.isArray(messages)) return;
+
+	for (const message of messages as Array<Record<string, unknown>>) {
+		const info = message.info as Record<string, unknown> | undefined;
+		const messageId = typeof info?.id === 'string' ? info.id : '';
+		if (!messageId || agent.opencodeSeenMessageIds.has(messageId)) {
+			continue;
+		}
+		agent.opencodeSeenMessageIds.add(messageId);
+
+		const role = typeof info?.role === 'string' ? info.role : '';
+		if (role === 'user') {
+			cancelWaitingTimer(agentId, waitingTimers);
+			clearAgentActivity(agent, agentId, permissionTimers, webview);
+			continue;
+		}
+		if (role !== 'assistant') {
+			continue;
+		}
+
+		const parts = message.parts;
+		if (!Array.isArray(parts)) {
+			continue;
+		}
+
+		let hasNonExempt = false;
+		for (const part of parts as Array<Record<string, unknown>>) {
+			if (part.type !== 'tool') {
+				continue;
+			}
+			const state = part.state as Record<string, unknown> | undefined;
+			const rawTool = typeof part.tool === 'string' ? part.tool : '';
+			if (!state || !rawTool) {
+				continue;
+			}
+			const toolName = normalizeOpenCodeToolName(rawTool);
+			const input = (state.input && typeof state.input === 'object') ? state.input as Record<string, unknown> : {};
+			const toolId = (typeof part.callID === 'string' && part.callID)
+				|| (typeof part.id === 'string' && part.id)
+				|| `${messageId}:${toolName}`;
+			const status = formatToolStatus(toolName, input);
+			const isTaskTool = toolName === 'Task';
+			const subagentToolId = `${toolId}:subtask`;
+
+			agent.activeToolIds.add(toolId);
+			agent.activeToolStatuses.set(toolId, status);
+			agent.activeToolNames.set(toolId, toolName);
+			if (!PERMISSION_EXEMPT_TOOLS.has(toolName)) {
+				hasNonExempt = true;
+			}
+			cancelWaitingTimer(agentId, waitingTimers);
+			agent.isWaiting = false;
+			agent.hadToolsInTurn = true;
+			webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'active' });
+			webview?.postMessage({ type: 'agentToolStart', id: agentId, toolId, status });
+			if (isTaskTool) {
+				webview?.postMessage({
+					type: 'subagentToolStart',
+					id: agentId,
+					parentToolId: toolId,
+					toolId: subagentToolId,
+					status: 'Running subtask',
+				});
+			}
+
+			agent.activeToolIds.delete(toolId);
+			agent.activeToolStatuses.delete(toolId);
+			agent.activeToolNames.delete(toolId);
+			setTimeout(() => {
+				webview?.postMessage({ type: 'agentToolDone', id: agentId, toolId });
+				if (isTaskTool) {
+					webview?.postMessage({
+						type: 'subagentToolDone',
+						id: agentId,
+						parentToolId: toolId,
+						toolId: subagentToolId,
+					});
+					webview?.postMessage({
+						type: 'subagentClear',
+						id: agentId,
+						parentToolId: toolId,
+					});
+				}
+			}, TOOL_DONE_DELAY_MS);
+		}
+
+		if (hasNonExempt) {
+			startPermissionTimer(agentId, agents, permissionTimers, PERMISSION_EXEMPT_TOOLS, webview);
+		}
+
+		const timeInfo = info?.time;
+		const completed = typeof (timeInfo as Record<string, unknown> | undefined)?.completed === 'number';
+		if (completed) {
+			cancelWaitingTimer(agentId, waitingTimers);
+			cancelPermissionTimer(agentId, permissionTimers);
+			agent.isWaiting = true;
+			agent.permissionSent = false;
+			agent.hadToolsInTurn = false;
+			webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'waiting' });
+		}
 	}
 }
 
