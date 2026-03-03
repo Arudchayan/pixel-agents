@@ -204,6 +204,7 @@ function adoptTerminalForFile(
 		jsonlFile,
 		opencodeSessionId: undefined,
 		opencodeSeenMessageIds: new Set(),
+		opencodeMessageStateHashes: new Map(),
 		fileOffset: 0,
 		lineBuffer: '',
 		activeToolIds: new Set(),

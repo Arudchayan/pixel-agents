@@ -14,6 +14,7 @@ function createAgent(): AgentState {
     jsonlFile: '',
     opencodeSessionId: 'ses_test',
     opencodeSeenMessageIds: new Set<string>(),
+    opencodeMessageStateHashes: new Map<string, string>(),
     fileOffset: 0,
     lineBuffer: '',
     activeToolIds: new Set<string>(),
@@ -71,6 +72,7 @@ async function caseNonExemptToolFlow(): Promise<void> {
         info: {
           id: 'm1',
           role: 'assistant',
+          time: { completed: Date.now() },
         },
         parts: [
           {
@@ -90,7 +92,7 @@ async function caseNonExemptToolFlow(): Promise<void> {
   processOpenCodeExport(1, exported, h.agents, h.waitingTimers, h.permissionTimers, h.webview as never)
   await sleep(350)
 
-  assert.equal(h.permissionTimers.has(1), true)
+  assert.equal(h.permissionTimers.has(1), false)
   assert.equal(h.messages.some((m) => m.type === 'agentStatus' && m.status === 'active'), true)
   assert.equal(h.messages.some((m) => m.type === 'agentToolStart' && m.status?.startsWith('Reading ')), true)
   assert.equal(h.messages.some((m) => m.type === 'agentToolDone' && m.toolId === 'call-read-1'), true)
@@ -104,6 +106,7 @@ async function caseExemptToolNoPermissionTimer(): Promise<void> {
         info: {
           id: 'm2',
           role: 'assistant',
+          time: { completed: Date.now() },
         },
         parts: [
           {
@@ -240,6 +243,7 @@ async function caseTaskEmitsSubagentLifecycle(): Promise<void> {
         info: {
           id: 'm7',
           role: 'assistant',
+          time: { completed: Date.now() },
         },
         parts: [
           {

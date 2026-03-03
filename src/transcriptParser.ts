@@ -205,16 +205,56 @@ export function processOpenCodeExport(
 	if (!agent) return;
 	const messages = exported.messages;
 	if (!Array.isArray(messages)) return;
+	const safeStringify = (value: unknown): string => {
+		try {
+			return JSON.stringify(value) ?? '';
+		} catch {
+			return '';
+		}
+	};
+	const computeFingerprint = (
+		messageId: string,
+		role: string,
+		completed: boolean,
+		parts: Array<Record<string, unknown>>,
+	): string => {
+		const partSummary = parts.map((part) => {
+			const type = typeof part.type === 'string' ? part.type : '';
+			if (type !== 'tool') {
+				return type;
+			}
+			const callID = typeof part.callID === 'string' ? part.callID : '';
+			const id = typeof part.id === 'string' ? part.id : '';
+			const tool = typeof part.tool === 'string' ? part.tool : '';
+			const stateRaw = safeStringify(part.state);
+			return `${type}:${tool}:${callID || id}:${stateRaw}`;
+		}).join('|');
+		return `${messageId}:${role}:${completed ? '1' : '0'}:${partSummary}`;
+	};
 
 	for (const message of messages as Array<Record<string, unknown>>) {
 		const info = message.info as Record<string, unknown> | undefined;
 		const messageId = typeof info?.id === 'string' ? info.id : '';
-		if (!messageId || agent.opencodeSeenMessageIds.has(messageId)) {
+		if (!messageId) {
 			continue;
 		}
-		agent.opencodeSeenMessageIds.add(messageId);
 
 		const role = typeof info?.role === 'string' ? info.role : '';
+		const timeInfo = info?.time;
+		const completed = typeof (timeInfo as Record<string, unknown> | undefined)?.completed === 'number';
+		const rawParts = message.parts;
+		const parts = Array.isArray(rawParts) ? rawParts as Array<Record<string, unknown>> : [];
+		const fingerprint = computeFingerprint(messageId, role, completed, parts);
+		if (agent.opencodeMessageStateHashes.get(messageId) === fingerprint) {
+			continue;
+		}
+		agent.opencodeMessageStateHashes.set(messageId, fingerprint);
+		while (agent.opencodeMessageStateHashes.size > 2000) {
+			const firstKey = agent.opencodeMessageStateHashes.keys().next().value as string | undefined;
+			if (!firstKey) break;
+			agent.opencodeMessageStateHashes.delete(firstKey);
+		}
+
 		if (role === 'user') {
 			cancelWaitingTimer(agentId, waitingTimers);
 			clearAgentActivity(agent, agentId, permissionTimers, webview);
@@ -224,13 +264,8 @@ export function processOpenCodeExport(
 			continue;
 		}
 
-		const parts = message.parts;
-		if (!Array.isArray(parts)) {
-			continue;
-		}
-
 		let hasNonExempt = false;
-		for (const part of parts as Array<Record<string, unknown>>) {
+		for (const part of parts) {
 			if (part.type !== 'tool') {
 				continue;
 			}
@@ -247,55 +282,76 @@ export function processOpenCodeExport(
 			const status = formatToolStatus(toolName, input);
 			const isTaskTool = toolName === 'Task';
 			const subagentToolId = `${toolId}:subtask`;
-
-			agent.activeToolIds.add(toolId);
-			agent.activeToolStatuses.set(toolId, status);
-			agent.activeToolNames.set(toolId, toolName);
-			if (!PERMISSION_EXEMPT_TOOLS.has(toolName)) {
-				hasNonExempt = true;
-			}
-			cancelWaitingTimer(agentId, waitingTimers);
-			agent.isWaiting = false;
-			agent.hadToolsInTurn = true;
-			webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'active' });
-			webview?.postMessage({ type: 'agentToolStart', id: agentId, toolId, status });
-			if (isTaskTool) {
-				webview?.postMessage({
-					type: 'subagentToolStart',
-					id: agentId,
-					parentToolId: toolId,
-					toolId: subagentToolId,
-					status: 'Running subtask',
-				});
-			}
-
-			agent.activeToolIds.delete(toolId);
-			agent.activeToolStatuses.delete(toolId);
-			agent.activeToolNames.delete(toolId);
-			setTimeout(() => {
-				webview?.postMessage({ type: 'agentToolDone', id: agentId, toolId });
+			const wasActive = agent.activeToolIds.has(toolId);
+			if (!wasActive) {
+				agent.activeToolIds.add(toolId);
+				agent.activeToolStatuses.set(toolId, status);
+				agent.activeToolNames.set(toolId, toolName);
+				cancelWaitingTimer(agentId, waitingTimers);
+				agent.isWaiting = false;
+				agent.hadToolsInTurn = true;
+				webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'active' });
+				webview?.postMessage({ type: 'agentToolStart', id: agentId, toolId, status });
 				if (isTaskTool) {
+					let subTools = agent.activeSubagentToolIds.get(toolId);
+					if (!subTools) {
+						subTools = new Set();
+						agent.activeSubagentToolIds.set(toolId, subTools);
+					}
+					subTools.add(subagentToolId);
+					let subNames = agent.activeSubagentToolNames.get(toolId);
+					if (!subNames) {
+						subNames = new Map();
+						agent.activeSubagentToolNames.set(toolId, subNames);
+					}
+					subNames.set(subagentToolId, toolName);
 					webview?.postMessage({
-						type: 'subagentToolDone',
+						type: 'subagentToolStart',
 						id: agentId,
 						parentToolId: toolId,
 						toolId: subagentToolId,
-					});
-					webview?.postMessage({
-						type: 'subagentClear',
-						id: agentId,
-						parentToolId: toolId,
+						status: 'Running subtask',
 					});
 				}
-			}, TOOL_DONE_DELAY_MS);
+			} else {
+				agent.activeToolStatuses.set(toolId, status);
+			}
+
+			if (!PERMISSION_EXEMPT_TOOLS.has(toolName)) {
+				hasNonExempt = true;
+			}
+
+			if (completed && agent.activeToolIds.has(toolId)) {
+				agent.activeToolIds.delete(toolId);
+				agent.activeToolStatuses.delete(toolId);
+				agent.activeToolNames.delete(toolId);
+				setTimeout(() => {
+					webview?.postMessage({ type: 'agentToolDone', id: agentId, toolId });
+					if (isTaskTool) {
+						webview?.postMessage({
+							type: 'subagentToolDone',
+							id: agentId,
+							parentToolId: toolId,
+							toolId: subagentToolId,
+						});
+						webview?.postMessage({
+							type: 'subagentClear',
+							id: agentId,
+							parentToolId: toolId,
+						});
+					}
+				}, TOOL_DONE_DELAY_MS);
+				if (isTaskTool) {
+					agent.activeSubagentToolIds.delete(toolId);
+					agent.activeSubagentToolNames.delete(toolId);
+				}
+			}
 		}
 
-		if (hasNonExempt) {
+		if (!completed && hasNonExempt) {
 			startPermissionTimer(agentId, agents, permissionTimers, PERMISSION_EXEMPT_TOOLS, webview);
 		}
 
-		const timeInfo = info?.time;
-		const completed = typeof (timeInfo as Record<string, unknown> | undefined)?.completed === 'number';
 		if (completed) {
 			cancelWaitingTimer(agentId, waitingTimers);
 			cancelPermissionTimer(agentId, permissionTimers);

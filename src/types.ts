@@ -15,6 +15,7 @@ export interface AgentState {
 	jsonlFile: string;
 	opencodeSessionId?: string;
 	opencodeSeenMessageIds: Set<string>;
+	opencodeMessageStateHashes: Map<string, string>;
 	fileOffset: number;
 	lineBuffer: string;
 	activeToolIds: Set<string>;
