@@ -38,6 +38,52 @@ interface ClaudeSessionSummary {
 	updated: number;
 }
 
+function getOpenCodeExecutables(): string[] {
+	const candidates: string[] = [
+		'opencode',
+		'opencode.cmd',
+		path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'opencode.cmd'),
+		path.join(os.homedir(), '.local', 'share', 'opencode', 'bin', 'opencode'),
+		path.join(os.homedir(), '.local', 'share', 'opencode', 'bin', 'opencode.exe'),
+	];
+	return Array.from(new Set(candidates));
+}
+
+function runOpenCode(args: string[], cwd: string | undefined, maxBuffer = 2 * 1024 * 1024): string | null {
+	for (const exe of getOpenCodeExecutables()) {
+		try {
+			return cp.execFileSync(exe, args, {
+				encoding: 'utf-8',
+				cwd,
+				windowsHide: true,
+				maxBuffer,
+			});
+		} catch {
+			continue;
+		}
+	}
+	return null;
+}
+
+function parseJsonFromOutput(raw: string): unknown {
+	const cleaned = raw.replace(/\x1b\[[0-9;]*m/g, '');
+	const starts: number[] = [];
+	for (let i = 0; i < cleaned.length; i++) {
+		const ch = cleaned[i];
+		if (ch === '{' || ch === '[') {
+			starts.push(i);
+		}
+	}
+	for (const start of starts) {
+		try {
+			return JSON.parse(cleaned.slice(start));
+		} catch {
+			continue;
+		}
+	}
+	throw new Error('No JSON payload found');
+}
+
 function formatAgentLabel(runtime: AgentRuntime, externalSession: boolean, folderName?: string): string {
 	const runtimeTag = runtime === AgentRuntime.OPENCODE ? 'OpenCode' : 'Claude';
 	if (externalSession) {
@@ -85,75 +131,116 @@ function listRecentClaudeSessions(): ClaudeSessionSummary[] {
 }
 
 function listOpenCodeSessions(cwd: string | undefined): OpenCodeSessionSummary[] {
-	try {
-		const out = cp.execFileSync('opencode', ['session', 'list', '--format', 'json', '-n', '30'], {
-			encoding: 'utf-8',
-			cwd,
-			windowsHide: true,
-			maxBuffer: 2 * 1024 * 1024,
-		});
-		const parsed = JSON.parse(out) as unknown;
-		if (!Array.isArray(parsed)) {
-			return [];
-		}
-		const sessions: OpenCodeSessionSummary[] = [];
-		for (const item of parsed) {
-			if (!item || typeof item !== 'object') {
-				continue;
+	const dbOut = runOpenCode([
+		'db',
+		'select id, title, directory, time_updated as updated, time_created as created from session where time_archived is null order by time_updated desc limit 100',
+		'--format',
+		'json',
+	], undefined, 4 * 1024 * 1024);
+	if (dbOut) {
+		try {
+			const parsed = parseJsonFromOutput(dbOut);
+			if (Array.isArray(parsed)) {
+				const sessions: OpenCodeSessionSummary[] = [];
+				for (const item of parsed) {
+					if (!item || typeof item !== 'object') {
+						continue;
+					}
+					const row = item as Record<string, unknown>;
+					const id = typeof row.id === 'string' ? row.id : '';
+					if (!id.startsWith('ses_')) {
+						continue;
+					}
+					sessions.push({
+						id,
+						title: typeof row.title === 'string' ? row.title : undefined,
+						updated: typeof row.updated === 'number' ? row.updated : undefined,
+						created: typeof row.created === 'number' ? row.created : undefined,
+						directory: typeof row.directory === 'string' ? row.directory : undefined,
+					});
+				}
+				if (sessions.length > 0) {
+					return sessions;
+				}
 			}
-			const row = item as Record<string, unknown>;
-			const id = typeof row.id === 'string' ? row.id : '';
-			if (!id.startsWith('ses_')) {
-				continue;
-			}
-			sessions.push({
-				id,
-				title: typeof row.title === 'string' ? row.title : undefined,
-				updated: typeof row.updated === 'number' ? row.updated : undefined,
-				created: typeof row.created === 'number' ? row.created : undefined,
-				directory: typeof row.directory === 'string' ? row.directory : undefined,
-			});
+		} catch {
 		}
-		return sessions;
-	} catch {
+	}
+
+	const jsonOut = runOpenCode(['session', 'list', '--format', 'json', '-n', '50'], cwd);
+	if (jsonOut) {
+		try {
+			const parsed = parseJsonFromOutput(jsonOut);
+			if (Array.isArray(parsed)) {
+				const sessions: OpenCodeSessionSummary[] = [];
+				for (const item of parsed) {
+					if (!item || typeof item !== 'object') {
+						continue;
+					}
+					const row = item as Record<string, unknown>;
+					const id = typeof row.id === 'string' ? row.id : '';
+					if (!id.startsWith('ses_')) {
+						continue;
+					}
+					let updated: number | undefined;
+					if (typeof row.updated === 'number') {
+						updated = row.updated;
+					} else if (typeof row.updated === 'string') {
+						const parsedTs = Date.parse(row.updated);
+						if (!Number.isNaN(parsedTs)) {
+							updated = parsedTs;
+						}
+					}
+					sessions.push({
+						id,
+						title: typeof row.title === 'string' ? row.title : undefined,
+						updated,
+						created: typeof row.created === 'number' ? row.created : undefined,
+						directory: typeof row.directory === 'string' ? row.directory : undefined,
+					});
+				}
+				if (sessions.length > 0) {
+					return sessions;
+				}
+			}
+		} catch {
+		}
+	}
+
+	const textOut = runOpenCode(['session', 'list', '-n', '20'], cwd) ?? runOpenCode(['session', 'list'], cwd);
+	if (!textOut) {
 		return [];
 	}
+	const ids = new Set<string>();
+	for (const match of textOut.matchAll(/ses_[A-Za-z0-9]+/g)) {
+		ids.add(match[0]);
+	}
+	const now = Date.now();
+	return Array.from(ids).map((id) => ({ id, updated: now }));
 }
 
 function tryGetLatestOpenCodeSessionId(cwd: string | undefined): string | null {
-	try {
-		const out = cp.execFileSync('opencode', ['session', 'list'], {
-			encoding: 'utf-8',
-			cwd,
-			windowsHide: true,
-		});
-		const lines = out.split(/\r?\n/);
-		for (const line of lines) {
-			const match = line.match(/(ses_[A-Za-z0-9]+)/);
-			if (match) {
-				return match[1];
-			}
-		}
-	} catch {
+	const sessions = listOpenCodeSessions(cwd)
+		.sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+	if (sessions.length > 0) {
+		return sessions[0].id;
 	}
 	return null;
 }
 
 function tryExportOpenCodeSession(sessionId: string, cwd: string | undefined): Record<string, unknown> | null {
-	try {
-		const out = cp.execFileSync('opencode', ['export', sessionId], {
-			encoding: 'utf-8',
-			cwd,
-			windowsHide: true,
-			maxBuffer: 10 * 1024 * 1024,
-		});
-		const jsonStart = out.indexOf('{');
-		if (jsonStart < 0) return null;
-		const raw = out.slice(jsonStart);
-		return JSON.parse(raw) as Record<string, unknown>;
-	} catch {
+	const out = runOpenCode(['export', sessionId], cwd, 10 * 1024 * 1024);
+	if (!out) {
 		return null;
 	}
+	try {
+		const parsed = parseJsonFromOutput(out);
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+	} catch {
+	}
+	return null;
 }
 
 function pollOpenCodeSession(
@@ -198,7 +285,7 @@ export function discoverAndAdoptOpenCodeSessions(
 	persistAgents: () => void,
 ): void {
 	const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-	const sessions = listOpenCodeSessions(cwd);
+	const sessions = listOpenCodeSessions(undefined);
 	if (sessions.length === 0) {
 		return;
 	}

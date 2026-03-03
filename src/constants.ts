@@ -6,7 +6,7 @@ export const TOOL_DONE_DELAY_MS = 300;
 export const PERMISSION_TIMER_DELAY_MS = 7000;
 export const TEXT_IDLE_DELAY_MS = 5000;
 export const OPENCODE_DISCOVERY_INTERVAL_MS = 5000;
-export const OPENCODE_RUNNING_WINDOW_MS = 10 * 60 * 1000;
+export const OPENCODE_RUNNING_WINDOW_MS = 30 * 60 * 1000;
 
 // ── Display Truncation ──────────────────────────────────────
 export const BASH_COMMAND_DISPLAY_MAX_LENGTH = 30;
