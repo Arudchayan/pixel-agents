@@ -1,5 +1,15 @@
 # React + TypeScript + Vite
 
+## Local standalone mode
+
+You can run the Pixel Agents frontend locally without VS Code webview host:
+
+```bash
+npm run dev
+```
+
+The app will use a local mock VS Code bridge, load a default layout, and simulate agent/sub-agent activity when you click `+ Agent`.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
